@@ -84,3 +84,9 @@ AI reviewers (CodeRabbit, Greptile, Qodo) comment on the diff. Claim checkers (g
 ## Author
 
 Pam Villalon (solo) · [LinkedIn](https://linkedin.com/in/pama8) · [GitHub](https://github.com/PamAntonio)
+
+## Roadmap
+- **MCP server:** expose `verify`, `rules` and `show` as MCP tools so any coding agent (Muse Code, Claude Code, Codex) can request a check when it thinks it's done. The agent can ask for a check but can never change the verdict.
+- **CI gate:** run MergeGuard as a required check on every pull request an agent opens, so the merge is locked outside the agent.
+- **Independent tests:** MergeGuard writes its own held-out tests (e.g., compare the agent's solution to a slow brute-force version on random inputs) that the agent never sees.
+- **Memory:** remember past failures and fixes, so repeat mistakes get fixed faster.
