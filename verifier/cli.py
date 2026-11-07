@@ -144,11 +144,14 @@ def cmd_fix(args):
                           attempts=attempts, fix_loop_ran=fix_ran,
                           seconds=time.time() - started)
     rule_codes = {f.code for f in data["flags"]}
-    if fix_ran and data["tests"]["exit_code"] == 0 and not (rule_codes & _rules.FIX_LOOP_CODES):
+    blocking = rule_codes & (_rules.FIX_LOOP_CODES - {"CLAIM_NO_EVIDENCE"})
+    if fix_ran and data["tests"]["exit_code"] == 0 and not blocking:
         report["decision"] = "FIXED_THEN_MERGE"
         report["decision_note"] = ("real tests pass and no rule flags remain; "
             "audit still reads the original pre-fix session log, so its "
             "unlogged-edit flag is kept as a warning, not a block")
+    if getattr(args, "simulated", False):
+        report["simulated"] = True
     report["orig_branch"] = orig
     path = save_report(report)
     print(json.dumps({k: report[k] for k in
@@ -164,6 +167,8 @@ def cmd_show(args):
         return 1
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
+    if report.get("simulated"):
+        print("Simulated cheater (made by hand)")
     print(json.dumps(report, indent=2))
     steps = report.get("steps") or []
     if steps:
@@ -207,6 +212,7 @@ def main(argv=None):
     p.add_argument("--claims")
     p.add_argument("--log")
     p.add_argument("--task")
+    p.add_argument("--simulated", action="store_true")
     p.set_defaults(fn=cmd_fix)
 
     p = sub.add_parser("show")
