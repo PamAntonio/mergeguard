@@ -15,4 +15,7 @@ def test_show_replays_saved_report(tmp_path, monkeypatch, capsys):
     (tmp_path / "task-x.json").write_text(json.dumps(report))
     assert cli.main(["show", "task-x"]) == 0
     out = capsys.readouterr().out
-    assert "MERGE" in out and "replay: 1 steps" in out
+    assert "MERGE" in out and "FINAL" in out
+    assert cli.main(["show", "task-x", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert "replay: 1 steps" in out

@@ -101,6 +101,8 @@ def cmd_verify(args):
         risk = risk_mod.risk_reason(data["diff"], data["files"])
     report = build_report(task, args.branch, data, audit_result, audit_flags,
                           risk, seconds=time.time() - started)
+    report["attempts_detail"] = []
+    report["final_tests"] = report["tests"]
     path = save_report(report)
     print(json.dumps({k: report[k] for k in
                       ("task", "decision", "attempts", "flags", "tests", "risk", "audit")},
@@ -117,39 +119,48 @@ def cmd_fix(args):
     task = args.task or args.branch
     orig = fixer.ensure_orig_branch(args.repo, args.branch)
     print(f"preserved original as {orig}")
+    # ORIGINAL verdict: evidence + audit on the untouched branch first.
+    orig_data = gather(args.repo, args.branch, args.base, args.claims, args.log, task)
+    audit_result, audit_flags, _u = audit_mod.audit_task(
+        orig_data["steps"], orig_data["diff"], orig_data["tests"]["output"],
+        orig_data["claim"])
     worktree = fixer.branch_worktree(args.repo, args.branch, WORK_ROOT)
     attempts = 0
-    data = gather(args.repo, args.branch, args.base, args.claims, args.log, task)
+    attempts_detail = []
+    data = orig_data
     while attempts < 3 and _rules.decide(data["flags"], attempts=attempts) == "FIX_LOOP":
         attempts += 1
         ticket = fixer.build_ticket(data["flags"], data["tests"], args.branch)
         print(f"--- attempt {attempts} ---\n{ticket}")
         ok, detail = fixer.try_muse_code_fix(worktree, ticket)
-        method = "muse-code-exec"
+        actor = "Muse Code via muse exec"
         if not ok:
             print(f"muse exec unavailable/failed ({detail[-200:]}); using Spark patch")
             ok, detail = fixer.spark_patch_fix(worktree, ticket)
-            method = "spark-patch"
-        print(f"fix via {method}: ok={ok} {detail[-200:]}")
+            actor = "Muse Spark patch + git apply"
+        print(f"fix via {actor}: ok={ok} {detail[-200:]}")
         fixer.commit_if_dirty(worktree, f"fix attempt {attempts} for {args.branch}")
         data = gather(args.repo, args.branch, args.base, args.claims, args.log, task)
-    audit_result, audit_flags, _u = audit_mod.audit_task(
-        data["steps"], data["diff"], data["tests"]["output"], data["claim"])
+        attempts_detail.append({
+            "n": attempts, "actor": actor, "ok": bool(ok),
+            "flags": [f.to_dict() for f in data["flags"]],
+            "tests": {"exit_code": data["tests"]["exit_code"],
+                      "summary": data["tests"]["summary"]},
+        })
     moved = evidence.git(args.repo, "rev-parse", args.branch).stdout.strip()
     orig_ref = evidence.git(args.repo, "rev-parse", orig).stdout.strip()
     fix_ran = attempts > 0 or (moved and orig_ref and moved != orig_ref)
-    if fix_ran and attempts == 0:
-        attempts = 1
-    report = build_report(task, args.branch, data, audit_result, audit_flags,
+    report = build_report(task, args.branch, orig_data, audit_result, audit_flags,
                           attempts=attempts, fix_loop_ran=fix_ran,
                           seconds=time.time() - started)
+    report["attempts_detail"] = attempts_detail
+    report["final_tests"] = {"exit_code": data["tests"]["exit_code"],
+                             "summary": data["tests"]["summary"]}
+    report["final_flags"] = [f.to_dict() for f in data["flags"]]
     rule_codes = {f.code for f in data["flags"]}
     blocking = rule_codes & (_rules.FIX_LOOP_CODES - {"CLAIM_NO_EVIDENCE"})
     if fix_ran and data["tests"]["exit_code"] == 0 and not blocking:
         report["decision"] = "FIXED_THEN_MERGE"
-        report["decision_note"] = ("real tests pass and no rule flags remain; "
-            "audit still reads the original pre-fix session log, so its "
-            "unlogged-edit flag is kept as a warning, not a block")
     if getattr(args, "simulated", False):
         report["simulated"] = True
     report["orig_branch"] = orig
@@ -167,13 +178,51 @@ def cmd_show(args):
         return 1
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2))
+        if report.get("steps"):
+            print(f"--- replay: {len(report['steps'])} steps (saved, no API calls) ---")
+            _print_steps(report["steps"])
+        return 0
+    from rich.console import Console
+    from rich.text import Text
+    console = Console(width=100)
     if report.get("simulated"):
-        print("Simulated cheater (made by hand)")
-    print(json.dumps(report, indent=2))
-    steps = report.get("steps") or []
-    if steps:
-        print(f"--- replay: {len(steps)} steps (saved, no API calls) ---")
-        _print_steps(steps)
+        console.print(Text("SIMULATED CHEATER (made by hand)", style="bold white on red"))
+    style = {"MERGE": "bold green", "FIXED_THEN_MERGE": "bold green",
+             "NEEDS_APPROVAL": "bold yellow", "BLOCK": "bold red"}.get(
+                 report.get("decision"), "bold")
+    console.print(Text(f"{report.get('task')}  [{report.get('decision')}]", style=style))
+    claim = " ".join(str(report.get("claim") or "").split())[:110]
+    console.print(f"Claim: {claim}")
+    console.print("Original flags:")
+    seen = set()
+    shown = 0
+    for flag in report.get("flags") or []:
+        key = (flag.get("code"), flag.get("detail"))
+        if key in seen:
+            continue
+        seen.add(key)
+        shown += 1
+        step = f" step {flag['step']}" if flag.get("step") else ""
+        console.print(f"  - ({flag.get('source')}) {flag.get('code')}{step}: ", markup=False)
+                      f"{str(flag.get('detail'))[:80]}")
+    if not shown:
+        console.print("  - none")
+    for item in (report.get("audit") or {}).get("claims") or []:
+        verdict = item.get("verified")
+        mark = "\u2713 verified" if verdict is True else (
+            "\u2717 false" if verdict is False else "? no evidence")
+        console.print(f"  {mark}: {str(item.get('claim'))[:80]}")
+    for att in report.get("attempts_detail") or []:
+        codes = [f.get("code") for f in att.get("flags") or []]
+        summary = (att.get("tests") or {}).get("summary", "")
+        console.print(f"attempt {att.get('n')}: {att.get('actor')} \u2192 "
+                      f"{summary}, flags: {','.join(codes) if codes else 'no flags'}")
+    risk = report.get("risk") or {}
+    if risk.get("score") is not None or risk.get("reason"):
+        console.print(f"Risk: {risk.get('score')}/10 \u2014 {str(risk.get('reason'))[:110]}")
+    console.print(Text(f"FINAL: {report.get('decision')}", style=style))
     return 0
 
 
@@ -217,6 +266,7 @@ def main(argv=None):
 
     p = sub.add_parser("show")
     p.add_argument("task")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_show)
 
     args = parser.parse_args(argv)
