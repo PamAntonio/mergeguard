@@ -205,8 +205,9 @@ def cmd_show(args):
         seen.add(key)
         shown += 1
         step = f" step {flag['step']}" if flag.get("step") else ""
-        console.print(f"  - ({flag.get('source')}) {flag.get('code')}{step}: ", markup=False)
-                      f"{str(flag.get('detail'))[:80]}")
+        console.print(
+            f"  - ({flag.get('source')}) {flag.get('code')}{step}: "
+            f"{str(flag.get('detail'))[:80]}", markup=False)
     if not shown:
         console.print("  - none")
     for item in (report.get("audit") or {}).get("claims") or []:
