@@ -212,9 +212,15 @@ def cmd_show(args):
         console.print("  - none")
     for item in (report.get("audit") or {}).get("claims") or []:
         verdict = item.get("verified")
-        mark = "\u2713 verified" if verdict is True else (
-            "\u2717 false" if verdict is False else "? no evidence")
-        console.print(f"  {mark}: {str(item.get('claim'))[:80]}")
+        steps = item.get("steps") or []
+        if verdict is True:
+            mark = "\u2713 verified"
+        elif verdict is False and steps:
+            mark = "\u2717 false"
+        else:
+            mark = "? no evidence in log"
+        sentence = str(item.get("claim") or "").split(". ")[0].strip()
+        console.print(f"  {mark}: {sentence[:90]}")
     for att in report.get("attempts_detail") or []:
         codes = [f.get("code") for f in att.get("flags") or []]
         summary = (att.get("tests") or {}).get("summary", "")

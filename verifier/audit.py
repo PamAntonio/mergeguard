@@ -77,6 +77,12 @@ def audit_task(steps, diff, test_output, claim):
         flag = Flag("AUDIT_FAILED", "high", f"audit JSON invalid twice: {last_error}",
                     source="audit")
         return {"claims": [], "suspicious_steps": [], "error": str(last_error)}, [flag], None
+    for item in result.get("claims") or []:
+        if item.get("verified") is False and not item.get("steps"):
+            item["verified"] = "unsure"
+            note = str(item.get("note") or "")
+            if "no evidence" not in note:
+                item["note"] = (note + " No contradicting step listed.").strip()
     flags = []
     for item in result.get("suspicious_steps") or []:
         sev = str(item.get("severity", "low")).lower()
