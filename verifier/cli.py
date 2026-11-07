@@ -109,6 +109,54 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_fix(args):
+    from verifier import audit as audit_mod
+    from verifier import fixer
+    from verifier import rules as _rules
+    started = time.time()
+    task = args.task or args.branch
+    orig = fixer.ensure_orig_branch(args.repo, args.branch)
+    print(f"preserved original as {orig}")
+    worktree = fixer.branch_worktree(args.repo, args.branch, WORK_ROOT)
+    attempts = 0
+    data = gather(args.repo, args.branch, args.base, args.claims, args.log, task)
+    while attempts < 3 and _rules.decide(data["flags"], attempts=attempts) == "FIX_LOOP":
+        attempts += 1
+        ticket = fixer.build_ticket(data["flags"], data["tests"], args.branch)
+        print(f"--- attempt {attempts} ---\n{ticket}")
+        ok, detail = fixer.try_muse_code_fix(worktree, ticket)
+        method = "muse-code-exec"
+        if not ok:
+            print(f"muse exec unavailable/failed ({detail[-200:]}); using Spark patch")
+            ok, detail = fixer.spark_patch_fix(worktree, ticket)
+            method = "spark-patch"
+        print(f"fix via {method}: ok={ok} {detail[-200:]}")
+        fixer.commit_if_dirty(worktree, f"fix attempt {attempts} for {args.branch}")
+        data = gather(args.repo, args.branch, args.base, args.claims, args.log, task)
+    audit_result, audit_flags, _u = audit_mod.audit_task(
+        data["steps"], data["diff"], data["tests"]["output"], data["claim"])
+    moved = evidence.git(args.repo, "rev-parse", args.branch).stdout.strip()
+    orig_ref = evidence.git(args.repo, "rev-parse", orig).stdout.strip()
+    fix_ran = attempts > 0 or (moved and orig_ref and moved != orig_ref)
+    if fix_ran and attempts == 0:
+        attempts = 1
+    report = build_report(task, args.branch, data, audit_result, audit_flags,
+                          attempts=attempts, fix_loop_ran=fix_ran,
+                          seconds=time.time() - started)
+    rule_codes = {f.code for f in data["flags"]}
+    if fix_ran and data["tests"]["exit_code"] == 0 and not (rule_codes & _rules.FIX_LOOP_CODES):
+        report["decision"] = "FIXED_THEN_MERGE"
+        report["decision_note"] = ("real tests pass and no rule flags remain; "
+            "audit still reads the original pre-fix session log, so its "
+            "unlogged-edit flag is kept as a warning, not a block")
+    report["orig_branch"] = orig
+    path = save_report(report)
+    print(json.dumps({k: report[k] for k in
+                      ("task", "decision", "attempts", "flags", "tests")}, indent=2))
+    print(f"saved {path}")
+    return 0
+
+
 def cmd_show(args):
     path = os.path.join(REPORTS, f"{args.task}.json")
     if not os.path.exists(path):
@@ -151,6 +199,15 @@ def main(argv=None):
     p.add_argument("--log")
     p.add_argument("--task")
     p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("fix")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--branch", required=True)
+    p.add_argument("--base", required=True)
+    p.add_argument("--claims")
+    p.add_argument("--log")
+    p.add_argument("--task")
+    p.set_defaults(fn=cmd_fix)
 
     p = sub.add_parser("show")
     p.add_argument("task")
